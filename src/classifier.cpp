@@ -1,9 +1,10 @@
-#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#endif
-
 #include <sys/socket.h>
 #include <linux/netlink.h>
+//#include <linux/connector.h>
+//#include <linux/cn_proc.h>
+#include "include/connector.h"
+#include "include/cn_proc.h"
 #include <signal.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -13,12 +14,6 @@
 #include <stdio.h>
 #include <dlfcn.h>
 #include <unordered_map>
-
-/*TODO: Workaround because of linux-libc-headers package does not have patch
-  connector: Fix invalid conversion in cn_proc.h
-*/
-#include "include/connector.h"
-#include "include/cn_proc.h"
 
 
 static int (*perf_lock_acq)(int handle, int duration,
@@ -35,6 +30,7 @@ static void initialize(void) {
 
     dlerror();
 
+    //printf("PerfMod: lib name %s\n", qcopt_lib_path);
     libhandle = dlopen(qcopt_lib_path, RTLD_NOW);
     if (!libhandle) {
         printf("PerfMod: Unable to open %s: %s\n", qcopt_lib_path, dlerror());
@@ -112,8 +108,8 @@ static int set_proc_ev_listen(int nl_sock, bool enable)
     struct __attribute__ ((aligned(NLMSG_ALIGNTO))) {
         struct nlmsghdr nl_hdr;
         struct __attribute__ ((__packed__)) {
-            enum proc_cn_mcast_op cn_mcast;
             struct cn_msg cn_msg;
+            enum proc_cn_mcast_op cn_mcast;
         };
     } nlcn_msg;
 
@@ -361,8 +357,8 @@ static int handle_proc_ev(int nl_sock)
     struct __attribute__ ((aligned(NLMSG_ALIGNTO))) {
         struct nlmsghdr nl_hdr;
         struct __attribute__ ((__packed__)) {
-            struct proc_event proc_ev;
             struct cn_msg cn_msg;
+            struct proc_event proc_ev;
         };
     } nlcn_msg;
     std::unordered_map <int, int> pid_perf_handle {};
