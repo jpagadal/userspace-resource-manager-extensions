@@ -1,4 +1,7 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
+
 #include <sys/socket.h>
 #include <linux/netlink.h>
 //#include <linux/connector.h>
@@ -14,6 +17,7 @@
 #include <stdio.h>
 #include <dlfcn.h>
 #include <unordered_map>
+#include <ResourceTuner/ResourceTunerAPIs.h>
 
 
 static void initialize(void) {
@@ -242,9 +246,17 @@ static void classify_process(int process_pid, int process_tgid,
             if (type != UNDETERMINED) {
                 // printf("type = %d\n", (int)type);
                 /* Type is encode or decode */
-                int handle = -1;
-                if ((handle = reduce_rt_threshold()) > 0)
+                uint32_t* list = (uint32_t*) calloc(2, sizeof(uint32_t));
+                list[0] = process_pid;
+                list[1] = 50;
+
+                int64_t handle = tuneSignal(0x00080000, -1, 0, "", "", 2, list);
+                if (handle > 0) {
+                    printf(" tuneSignal handle:%d", handle);
                     pid_perf_handle[process_pid] = handle;
+                } else {
+                    printf(" tuneSignal handle:%d", handle);
+                }
             }
         }
     } else {
