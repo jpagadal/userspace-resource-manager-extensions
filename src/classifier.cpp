@@ -16,57 +16,8 @@
 #include <unordered_map>
 
 
-static int (*perf_lock_acq)(int handle, int duration,
-                            int list[], int numArgs) = NULL;
-static int (*perf_lock_rel)(int handle) = NULL;
-static int (*perf_hint)(int, const char *, int, int) = NULL;
-
-
-static void *libhandle = NULL;
-
 static void initialize(void) {
-    const char *rc = NULL;
-    char qcopt_lib_path[100] = "libqti-perfd-client.so";
-
-    dlerror();
-
-    //printf("PerfMod: lib name %s\n", qcopt_lib_path);
-    libhandle = dlopen(qcopt_lib_path, RTLD_NOW);
-    if (!libhandle) {
-        printf("PerfMod: Unable to open %s: %s\n", qcopt_lib_path, dlerror());
-    }
-
-    if (!libhandle) {
-        printf("PerfMod: Failed to get qcopt handle.\n");
-    } else {
-        /*
-         * qc-opt handle obtained. Get the perflock acquire/release
-         * function pointers.
-         */
-        *(void **) (&perf_lock_acq) = dlsym(libhandle, "perf_lock_acq");
-        if ((rc = dlerror()) != NULL) {
-             printf("PerfMod: Unable to get perf_lock_acq function handle.\n");
-             dlclose(libhandle);
-             libhandle = NULL;
-             return;
-        }
-
-        *(void **) (&perf_lock_rel) = dlsym(libhandle, "perf_lock_rel");
-        if ((rc = dlerror()) != NULL) {
-             printf("PerfMod: Unable to get perf_lock_rel function handle.\n");
-             dlclose(libhandle);
-             libhandle = NULL;
-             return;
-        }
-
-        *(void **) (&perf_hint) = dlsym(libhandle, "perf_hint");
-        if ((rc = dlerror()) != NULL) {
-             printf("PerfMod: Unable to get perf_hint function handle.\n");
-             dlclose(libhandle);
-             libhandle = NULL;
-             return;
-        }
-    }
+    //TODO: Do the setup required for resource-tuner.
 }
 
 /*
@@ -133,31 +84,14 @@ static int set_proc_ev_listen(int nl_sock, bool enable)
     return 0;
 }
 
-/* Apply an action for process creation */
-static void apply_action(int process_pid, int process_tgid)
-{
-#if 0
-    /* TODO: Refactoring and other things */
-    printf("Applying action for process launch, pid: %d\n", process_pid);
-    int duration = 2000;
-    if (perf_hint) {
-		int handle = perf_hint(0x1000, NULL, duration, -1);
-        if (handle <= 0) {
-            fprintf(stderr, "Failed to apply hint for this process\n");
-        }
-    } else {
-        fprintf(stderr, "perf_hint function not available, try something else\n");
-    }
-#endif
-}
-
 /* Remove actions applied for perf stores */
 static void remove_actions(int process_pid, int process_tgid,
                            std::unordered_map<int, int> & pid_perf_handle)
 {
+    /* Remove the process from CG ?*/
     /* TODO: Should we need to check periodically for tasks in cgroups */
     if (pid_perf_handle.find(process_pid) != pid_perf_handle.end()) {
-        perf_lock_rel(pid_perf_handle[process_pid]);
+        //untuneResource()
         pid_perf_handle.erase(process_pid);
     }
 }
@@ -165,16 +99,9 @@ static void remove_actions(int process_pid, int process_tgid,
 static int reduce_rt_threshold(void)
 {
     //printf("Reducing rt threshold\n");
+    //TODO: Move the process into cgroup using resource_tuner API
     int handle = -1;
-    if (perf_lock_acq) {
-        int args[] = {0x44010000, 0};
-		handle = perf_lock_acq(-1, 0, args, 2);
-        if (handle <= 0) {
-            fprintf(stderr, "Failed to acq lock for this process\n");
-        }
-    } else {
-        fprintf(stderr, "perf_lock_acq function not available\n");
-    }
+    // handle = tuneResources();
     return handle;
 }
 
@@ -230,6 +157,7 @@ enum USECASE find_usecase(char *buf, size_t sz)
      * For snapshot and preview, need to check usecases, what should be
      * added, gst-pipeline-app or something
      */
+    printf("find_usecase\n");
     int encode = 0, decode = 0, height = 0;
     char *e = buf, *h = buf;
     const char *e_str = "v4l2h264enc";
@@ -273,30 +201,6 @@ enum USECASE find_usecase(char *buf, size_t sz)
     return u;
 }
 
-int add_to_cgroup(USECASE type, int pid)
-{
-    /* Add this cgroup to appropriate type based on it's type */
-    const char *dec_cgroup = "/sys/fs/cgroup/cpu,cpuacct/decode/tasks";
-    const char *enc_cgroup = "/sys/fs/cgroup/cpu,cpuacct/encode/tasks";
-    char cmd[128];
-    if (type == DECODE) {
-        snprintf(cmd, 128, "echo %d > %s\n", pid, dec_cgroup);
-        int r = system(cmd);
-        if (r != 0) {
-            printf("Failed to add process[%d] to dec cgroup, res = %d\n", pid, r);
-            printf("cmd: %s\n", cmd);
-        }
-    } else if (type >= ENCODE_720 && type <= ENCODE_MANY) {
-        snprintf(cmd, 128, "echo %d > %s\n", pid, enc_cgroup);
-        int r = system(cmd);
-        if (r != 0) {
-            printf("Failed to add process[%d] to enc cgroup, res = %d\n", pid, r);
-            printf("cmd: %s\n", cmd);
-        }
-    }
-    return 0;
-}
-
 /* Process classfication based on selinux context of process
  * TODO: How to create or use cgroups based on process creation.
  * TODO: Apply utilization limit on process groups.
@@ -332,18 +236,19 @@ static void classify_process(int process_pid, int process_tgid,
         int len = 0;
         while ((len = getline(&buf, &sz, fp)) > 0) {
             sanitize_nulls(buf, len);
+            //printf("PID:%d cmdline:%s\n", process_pid, buf);
+            printf("PID:%d \n", process_pid);
             enum USECASE type = find_usecase(buf, sz);
             if (type != UNDETERMINED) {
                 // printf("type = %d\n", (int)type);
                 /* Type is encode or decode */
-                add_to_cgroup(type, process_pid);
                 int handle = -1;
                 if ((handle = reduce_rt_threshold()) > 0)
                     pid_perf_handle[process_pid] = handle;
             }
         }
     } else {
-        //fprintf(stderr, "Failed to open file\n");
+        printf("Failed to open file:%d\n", process_pid);
     }
 }
 
@@ -378,52 +283,41 @@ static int handle_proc_ev(int nl_sock)
                 // printf("set mcast listen ok\n");
                 break;
             case proc_event::PROC_EVENT_FORK:
-                #if 1
                 printf("fork: parent tid=%d pid=%d -> child tid=%d pid=%d\n",
                        nlcn_msg.proc_ev.event_data.fork.parent_pid,
                        nlcn_msg.proc_ev.event_data.fork.parent_tgid,
                        nlcn_msg.proc_ev.event_data.fork.child_pid,
                        nlcn_msg.proc_ev.event_data.fork.child_tgid);
-                #endif
                 break;
             case proc_event::PROC_EVENT_EXEC:
-                #if 1
                 printf("exec: tid=%d pid=%d\n",
                        nlcn_msg.proc_ev.event_data.exec.process_pid,
                        nlcn_msg.proc_ev.event_data.exec.process_tgid);
-                #endif
 
                 classify_process(nlcn_msg.proc_ev.event_data.exec.process_pid,
                              nlcn_msg.proc_ev.event_data.exec.process_tgid,
                              pid_perf_handle);
-                apply_action(nlcn_msg.proc_ev.event_data.exec.process_pid,
-                             nlcn_msg.proc_ev.event_data.exec.process_tgid);
+                //Move the Process into respective cg using tuneResource()
                 break;
             case proc_event::PROC_EVENT_UID:
-                #if 1
                 printf("uid change: tid=%d pid=%d from %d to %d\n",
                        nlcn_msg.proc_ev.event_data.id.process_pid,
                        nlcn_msg.proc_ev.event_data.id.process_tgid,
                        nlcn_msg.proc_ev.event_data.id.r.ruid,
                        nlcn_msg.proc_ev.event_data.id.e.euid);
-                #endif
                 break;
             case proc_event::PROC_EVENT_GID:
-                #if 1
                 printf("gid change: tid=%d pid=%d from %d to %d\n",
                        nlcn_msg.proc_ev.event_data.id.process_pid,
                        nlcn_msg.proc_ev.event_data.id.process_tgid,
                        nlcn_msg.proc_ev.event_data.id.r.rgid,
                        nlcn_msg.proc_ev.event_data.id.e.egid);
-                #endif
                 break;
             case proc_event::PROC_EVENT_EXIT:
-                #if 1
                 printf("exit: tid=%d pid=%d exit_code=%d\n",
                        nlcn_msg.proc_ev.event_data.exit.process_pid,
                        nlcn_msg.proc_ev.event_data.exit.process_tgid,
                        nlcn_msg.proc_ev.event_data.exit.exit_code);
-                #endif
                 remove_actions(nlcn_msg.proc_ev.event_data.exec.process_pid,
                                nlcn_msg.proc_ev.event_data.exec.process_tgid,
                                pid_perf_handle);
@@ -447,7 +341,6 @@ int main(int argc, const char *argv[])
     int nl_sock;
     int rc = EXIT_SUCCESS;
 
-    /* TODO: Replace siginterrupt with sigaction */
     initialize();
     //signal(SIGINT, &on_sigint);
     //siginterrupt(SIGINT, true);
