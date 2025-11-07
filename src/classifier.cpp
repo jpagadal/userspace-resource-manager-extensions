@@ -30,8 +30,68 @@
 
 #define SIGNAL_CAM_PREVIEW 0x000d0002
 
+// Helper to check if a string contains only digits
 bool is_digits(const std::string& str) {
     return std::all_of(str.begin(), str.end(), ::isdigit);
+}
+
+// Function to get the first matching PID for a given process name
+pid_t getProcessPID_COMM(const std::string& process_name) {
+    DIR* proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        std::cerr << "Failed to open /proc directory." << std::endl;
+        return -1;
+    }
+
+    struct dirent* entry;
+    while ((entry = readdir(proc_dir)) != nullptr) {
+        if (entry->d_type == DT_DIR && is_digits(entry->d_name)) {
+            std::string pid_str = entry->d_name;
+            std::string comm_path = "/proc/" + pid_str + "/comm";
+            std::ifstream comm_file(comm_path);
+            std::string comm;
+            if (comm_file) {
+                std::getline(comm_file, comm);
+                if (comm.find(process_name) != std::string::npos) {
+                    closedir(proc_dir);
+                    return static_cast<pid_t>(std::stoi(pid_str));
+                }
+            }
+        }
+    }
+
+    closedir(proc_dir);
+    return -1; // Not found
+}
+
+// Function to get all matching PIDs for a given process name
+std::vector<pid_t> getProcessPIDs(const std::string& process_name) {
+    std::vector<pid_t> matching_pids;
+    DIR* proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        std::cerr << "Failed to open /proc directory." << std::endl;
+        return matching_pids;
+    }
+
+    struct dirent* entry;
+    while ((entry = readdir(proc_dir)) != nullptr) {
+        if (entry->d_type == DT_DIR && is_digits(entry->d_name)) {
+            std::string pid_str = entry->d_name;
+            std::string cmdline_path = "/proc/" + pid_str + "/comm";
+            std::ifstream cmdline_file(cmdline_path);
+            std::cout << cmdline_path << std::endl;
+            std::string cmdline;
+            if (cmdline_file) {
+                std::getline(cmdline_file, cmdline, '\0');
+                if (cmdline.find(process_name) != std::string::npos) {
+                    matching_pids.push_back(static_cast<pid_t>(std::stoi(pid_str)));
+                }
+            }
+        }
+    }
+
+    closedir(proc_dir);
+    return matching_pids;
 }
 
 pid_t getProcessPID(const std::string& process_name) {
@@ -306,16 +366,25 @@ static void classify_process(int process_pid, int process_tgid,
                 } else {
                     printf("Could not find cam-server PID: %ld", cam_pid);
                 }
-                uint32_t* list = (uint32_t*) calloc(2, sizeof(uint32_t));
+
+                pid_t kswap_pid = getProcessPID_COMM("kswapd0");
+                if (kswap_pid > 0 ) {
+                    printf("Kswap PID: %ld", kswap_pid);
+                } else {
+                    printf("Could not find kswap PID: %ld", kswap_pid);
+                }
+
+                uint32_t* list = (uint32_t*) calloc(3, sizeof(uint32_t));
                 list[0] = process_pid;
                 list[1] = cam_pid;
+                list[2] = kswap_pid;
 
-                int64_t handle = tuneSignal(SIGNAL_CAM_PREVIEW, 0, 0, "", "", 2, list);
+                int64_t handle = tuneSignal(SIGNAL_CAM_PREVIEW, 0, 0, "", "", 3, list);
                 if (handle > 0) {
-                    printf(" tuneSignal handle:%d gstPID:%d camPID:%d", handle, process_pid, cam_pid);
+                    printf(" tuneSignal handle:%d gstPID:%d camPID:%d kswapPID:%d \n", handle, process_pid, cam_pid, kswap_pid);
                     pid_perf_handle[process_pid] = handle;
                 } else {
-                    printf(" tuneSignal handle:%d gstPID:%d camPID:%d", handle, process_pid, cam_pid);
+                    printf(" tuneSignal handle:%d gstPID:%d camPID:%d kswapPID:%d \n", handle, process_pid, cam_pid, kswap_pid);
                 }
             }
         }
