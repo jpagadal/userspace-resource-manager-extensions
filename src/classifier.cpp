@@ -319,6 +319,22 @@ enum USECASE find_usecase(char *buf, size_t sz)
     return u;
 }
 
+bool checkProcessCommSubstring(int pid, const std::string& target) {
+    std::string path = "/proc/" + std::to_string(pid) + "/comm";
+    std::ifstream file(path);
+
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open " + path + ". Process may not exist.");
+    }
+
+    std::string processName;
+    std::getline(file, processName); // Read the process name
+    file.close();
+
+    // Check if target is a substring of processName
+    return processName.find(target) != std::string::npos;
+}
+
 /* Process classfication based on selinux context of process
  * TODO: How to create or use cgroups based on process creation.
  * TODO: Apply utilization limit on process groups.
@@ -348,6 +364,7 @@ static void classify_process(int process_pid, int process_tgid,
     char cmdline[1024];
     snprintf(cmdline, 1024, "/proc/%d/cmdline", process_pid);
     FILE *fp = fopen(cmdline, "r");
+    std::string target = "gst-camera-per";
     if (fp) {
         char *buf = NULL;
         size_t sz = 0;
@@ -357,6 +374,16 @@ static void classify_process(int process_pid, int process_tgid,
             //printf("PID:%d cmdline:%s\n", process_pid, buf);
             printf("PID:%d \n", process_pid);
             enum USECASE type = find_usecase(buf, sz);
+            if (type == UNDETERMINED) {
+                if (checkProcessCommSubstring(process_pid, target)) {
+                    std::cout << "gst-camera-per-port : encode" << std::endl;
+                    type = ENCODE_MANY;
+                } else {
+                    std::cout << "No match." << std::endl;
+                    type = UNDETERMINED;
+                }
+            }
+
             if (type != UNDETERMINED) {
                 // printf("type = %d\n", (int)type);
                 /* Type is encode or decode */
