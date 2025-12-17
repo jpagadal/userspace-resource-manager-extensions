@@ -4,10 +4,10 @@
 
 #include <sys/socket.h>
 #include <linux/netlink.h>
-//#include <linux/connector.h>
-//#include <linux/cn_proc.h>
-#include "connector.h"
-#include "cn_proc.h"
+#include <linux/connector.h>
+#include <linux/cn_proc.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <signal.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -18,8 +18,7 @@
 #include <dlfcn.h>
 #include <unordered_map>
 #include <unordered_set>
-//#include <ResourceTuner/ResourceTunerAPIs.h>
-#include <syslog.h> // Include syslog for logging
+#include <syslog.h>
 #include <iostream>
 #include <sstream>
 
@@ -37,6 +36,16 @@
 #include "parser.h"
 #include "ml_inference.h" // Include our new ML inference header
 
+// Define a local version of cn_msg without the flexible array member 'data[]'
+// to allow embedding it in other structures.
+struct cn_msg_hdr {
+    struct cb_id id;
+    __u32 seq;
+    __u32 ack;
+    __u16 len;
+    __u16 flags;
+};
+
 #define CLASSIFIER_CONF_DIR "/etc/classifier/"
 
 // Thread pool and job queue
@@ -49,8 +58,11 @@ const int NUM_THREADS = 4;
 // Define paths to ML artifacts
 const std::string FT_MODEL_PATH = CLASSIFIER_CONF_DIR "fasttext_model_supervised.bin";
 const std::string IGNORE_PROC_PATH = CLASSIFIER_CONF_DIR "classifier-blocklist.txt";
+const std::string IGNORE_TOKENS_PATH = CLASSIFIER_CONF_DIR "ignore-tokens.txt";
 
 std::unordered_set<std::string> ignored_processes;
+std::unordered_map<std::string, std::unordered_set<std::string>> g_token_ignore_map;
+bool g_debug_mode = false;
 
 void load_ignored_processes() {
     std::ifstream file(IGNORE_PROC_PATH);
@@ -140,7 +152,7 @@ static int set_proc_ev_listen(int nl_sock, bool enable)
     struct __attribute__ ((aligned(NLMSG_ALIGNTO))) {
         struct nlmsghdr nl_hdr;
         struct __attribute__ ((__packed__)) {
-            struct cn_msg cn_msg;
+            struct cn_msg_hdr cn_msg;
             enum proc_cn_mcast_op cn_mcast;
         };
     } nlcn_msg;
@@ -205,56 +217,19 @@ static void classify_process(int process_pid, int process_tgid,
     syslog(LOG_DEBUG, "Starting classification for PID:%d", process_pid);
 
     std::map<std::string, std::string> raw_data;
-    const auto& text_cols = ml_inference_obj.getTextCols();
+    
+    // Collect data using collect_and_store_data.
+    // This performs collection, filtering, and optional CSV dumping in one go.
+    collect_and_store_data(process_pid, g_token_ignore_map, raw_data, g_debug_mode);
 
-    // Collect Text Features
-    for (const auto& col : text_cols) {
-        std::vector<std::string> data_vec;
-        if (col == "attr") {
-            data_vec = parse_proc_attr_current(process_pid, " ");
-        } else if (col == "cgroup") {
-            data_vec = parse_proc_cgroup(process_pid, " ");
-        } else if (col == "cmdline") {
-            data_vec = parse_proc_cmdline(process_pid, " ");
-        } else if (col == "comm") {
-            data_vec = parse_proc_comm(process_pid, " ");
-        } else if (col == "maps") {
-            data_vec = parse_proc_map_files(process_pid, " ");
-        } else if (col == "fds") {
-            data_vec = parse_proc_fd(process_pid, " ");
-        } else if (col == "environ") {
-            data_vec = parse_proc_environ(process_pid, " ");
-        } else if (col == "exe") {
-            data_vec = parse_proc_exe(process_pid, " ");
-        } else if (col == "logs") {
-            data_vec = readJournalForPid(process_pid);
-        } else {
-            syslog(LOG_WARNING, "Unknown text column '%s' for PID:%d. Skipping.", col.c_str(), process_pid);
-            continue;
-        }
-
-        std::stringstream ss;
-        for(const auto& s : data_vec) {
-            ss << s << " ";
-        }
-        raw_data[col] = ss.str();
-        if (!raw_data[col].empty()) {
-            raw_data[col].pop_back();
-        }
-
-        if (raw_data[col].empty()) {
-            syslog(LOG_DEBUG, "PID:%d | Text Feature: %s | Value: <EMPTY> (Failed to collect or was empty)", process_pid, col.c_str());
-        } else {
-            syslog(LOG_DEBUG, "PID:%d | Text Feature: %s | Value: %s", process_pid, col.c_str(), raw_data[col].c_str());
-        }
-    }
     syslog(LOG_DEBUG, "Text features collected for PID:%d", process_pid);
 
     if (!is_process_alive(process_pid)) return;
 
     bool has_sufficient_features = false;
-    for (const auto& col : text_cols) {
-        if (raw_data.count(col) && !raw_data.at(col).empty()) {
+    // Check if we have any data collected
+    for (const auto& kv : raw_data) {
+        if (!kv.second.empty()) {
             has_sufficient_features = true;
             break;
         }
@@ -303,7 +278,7 @@ static int handle_proc_ev(int nl_sock, MLInference& ml_inference_obj)
     struct __attribute__ ((aligned(NLMSG_ALIGNTO))) {
         struct nlmsghdr nl_hdr;
         struct __attribute__ ((__packed__)) {
-            struct cn_msg cn_msg;
+            struct cn_msg_hdr cn_msg;
             struct proc_event proc_ev;
         };
     } nlcn_msg;
@@ -320,17 +295,17 @@ static int handle_proc_ev(int nl_sock, MLInference& ml_inference_obj)
             return -1;
         }
         switch (nlcn_msg.proc_ev.what) {
-            case proc_event::PROC_EVENT_NONE:
+            case PROC_EVENT_NONE:
                 // syslog(LOG_DEBUG, "set mcast listen ok");
                 break;
-            case proc_event::PROC_EVENT_FORK:
+            case PROC_EVENT_FORK:
                 syslog(LOG_DEBUG, "fork: parent tid=%d pid=%d -> child tid=%d pid=%d",
                        nlcn_msg.proc_ev.event_data.fork.parent_pid,
                        nlcn_msg.proc_ev.event_data.fork.parent_tgid,
                        nlcn_msg.proc_ev.event_data.fork.child_pid,
                        nlcn_msg.proc_ev.event_data.fork.child_tgid);
                 break;
-            case proc_event::PROC_EVENT_EXEC:
+            case PROC_EVENT_EXEC:
                 syslog(LOG_DEBUG, "Received PROC_EVENT_EXEC for tid=%d pid=%d",
                        nlcn_msg.proc_ev.event_data.exec.process_pid,
                        nlcn_msg.proc_ev.event_data.exec.process_tgid);
@@ -354,21 +329,21 @@ static int handle_proc_ev(int nl_sock, MLInference& ml_inference_obj)
                     }
                 }
                 break;
-            case proc_event::PROC_EVENT_UID:
+            case PROC_EVENT_UID:
                 syslog(LOG_DEBUG, "uid change: tid=%d pid=%d from %d to %d",
                        nlcn_msg.proc_ev.event_data.id.process_pid,
                        nlcn_msg.proc_ev.event_data.id.process_tgid,
                        nlcn_msg.proc_ev.event_data.id.r.ruid,
                        nlcn_msg.proc_ev.event_data.id.e.euid);
                 break;
-            case proc_event::PROC_EVENT_GID:
+            case PROC_EVENT_GID:
                 syslog(LOG_DEBUG, "gid change: tid=%d pid=%d from %d to %d",
                        nlcn_msg.proc_ev.event_data.id.process_pid,
                        nlcn_msg.proc_ev.event_data.id.process_tgid,
                        nlcn_msg.proc_ev.event_data.id.r.rgid,
                        nlcn_msg.proc_ev.event_data.id.e.egid);
                 break;
-            case proc_event::PROC_EVENT_EXIT:
+            case PROC_EVENT_EXIT:
                 syslog(LOG_DEBUG, "exit: tid=%d pid=%d exit_code=%d",
                        nlcn_msg.proc_ev.event_data.exit.process_pid,
                        nlcn_msg.proc_ev.event_data.exit.process_tgid,
@@ -396,10 +371,27 @@ int main(int argc, const char *argv[])
     int nl_sock;
     int rc = EXIT_SUCCESS;
 
+    // Default: Hide debug logs
+    int log_mask = LOG_UPTO(LOG_INFO);
+
+    // Check for verbose flag
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--debug") == 0) {
+            log_mask = LOG_UPTO(LOG_DEBUG);
+            g_debug_mode = true;
+            break;
+        }
+    }
+    setlogmask(log_mask);
+
     openlog("classifier", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON); // Initialize syslog
     syslog(LOG_INFO, "Classifier service started.");
     initialize();
     load_ignored_processes();
+    
+    // Load ignore tokens for filtering
+    g_token_ignore_map = loadIgnoreMap(IGNORE_TOKENS_PATH);
+    syslog(LOG_INFO, "Loaded ignore tokens configuration.");
     
     for (int i = 0; i < NUM_THREADS; ++i) {
         thread_pool.emplace_back(worker_thread);
