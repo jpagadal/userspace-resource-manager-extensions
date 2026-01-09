@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.6)
 set(CMAKE_CXX_STANDARD 17 LANGUAGES CXX)
 
 project("URM-Extensions")
-
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 # Install the extension "UrmExtensions.so" lib
 file(GLOB SOURCES "Extensions/*.cpp")
 add_library(UrmExtensions ${SOURCES})
