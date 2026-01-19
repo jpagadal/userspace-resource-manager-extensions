@@ -14,36 +14,38 @@ This project depends on urm project https://github.com/qualcomm/userspace-resour
 
 ## Build and install Instructions
 ### On Ubuntu
-* Step 1: Build Urm: Follow the steps provided here: https://github.com/qualcomm/userspace-resource-manager?tab=readme-ov-file#build-and-install-instructions
 
-Step 1 ensures that URM configs, libs, headers are installed. URM Extensions need the UrmExtApis and UrmAuxUtils (optional) libraries as well as the header files Extensions.h and Common.h for building. Successful execution of step 1 ensures these dependencies are met.
+- Step 1:
+  - **Build Urm**: Follow the steps provided here: https://github.com/qualcomm/userspace-resource-manager?tab=readme-ov-file#build-and-install-instructions
+  - Step 1 ensures that URM configs, libs, headers are installed. URM Extensions need the UrmExtApis and UrmAuxUtils (optional) libraries as well as the header files Extensions.h and Common.h for building. Successful execution of step 1 ensures these dependencies are met.
 
-* Step 2: Build and Install Plugin module
-* Create a build directory
-```bash
-rm -rf build && mkdir build && cd build
-```
-* Configure the project:
-Default Build
-```bash
-cmake .. -DCMAKE_INSTALL_PREFIX=/
-```
+- Step 2: **Build and Install Plugin module**
+   - Create a build directory
+      ```bash
+      rm -rf build && mkdir build && cd build
+      ```
+    - Configure the project:
+        ```bash
+        cmake .. -DCMAKE_INSTALL_PREFIX=/
+        ```
 
-* Build the project
-```bash
-cmake --build .
-```
-* Install
-```bash
-sudo cmake --install .
-```
+     - Build the extensions project:
+    
+        ```bash
+        cmake --build .
+        ```
+    - Install
+      ```bash
+      sudo cmake --install .
+      ```
 
-Step 2 builds the Extensions module and install the lib: RestunePlugin.so to /usr/lib. When Urm is booted up, it looks up this lib as a source of any customizations / configurations.
+    - Step 2 builds the Extensions module and install the lib: RestunePlugin.so to /usr/lib. When Urm is booted up, it looks up this lib as a source of any customizations / configurations.
 
-* Step 3: Start URM server
-```bash
-/usr/bin/urm
-```
+
+- Step 3: **Start URM server**
+    ```bash
+    /usr/bin/urm
+    ```
 
 Finally the URM server is started, as the RestunePlugin.so library has already been installed as part of step 2, hence it is loaded and the customizations are applied.
 
